@@ -26,9 +26,21 @@ from opacus.accountants.analysis import rdp as rdp_analysis
 # -----------------------------
 st.set_page_config(page_title="PPML Demo", layout="wide")
 st.title("Privacy-Preserving ML Demo")
+st.markdown("""
+    ## What this app does
+    This tool demosntrates how Machine Learning behaves when privacy protection is applied.
+    
+    You can:
+    - Train a normal ML model (no privacy)
+    - Train a different privacy preserving ML model
+    - Compare accuracy, loss and privacy trade-offs
+            
+    This helps you understand the balance between **model performance and data privacy**.
+""")
+
 st.write(
     "Upload a CSV or use the built-in synthetic dataset, choose a technique, "
-    "then train and visualise results. Compare **Non-Private** vs **Differential Privacy**."
+    "then train and visualise results. Compare **Non-Private** vs **Privacy-Preserving Machine Learning Techniques**."
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,6 +50,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # 1) Sidebar: dataset + technique
 # -----------------------------
 st.sidebar.header("Dataset")
+st.sidebar.info("""
+    Dataset Options:
+    - Synthetic dataset: Automatically generated data
+    - CSV upload: Your own dataset (last column must be labeled)
+                
+    We use this to simulate real-world ML training scenarios.
+""")
+
 ds_choice = st.sidebar.selectbox(
     "Select data source",
     [
@@ -54,19 +74,36 @@ if ds_choice == "Upload CSV (last column = label)":
 
 st.sidebar.markdown("---")
 st.sidebar.header("Technique")
+st.sidebar.info("""
+    Tecniques Explained:
+    
+    - Baseline: Standard ML training (no privacy protection)
+    - DIfferential Privacy: Adds noise to gradients to protect individual data
+    - Federated Learning: Training across mulitple devices
+    - Homomorphic Encryption: Computation on encrypted data
+""")
+
 technique = st.sidebar.selectbox(
     "Select technique",
     [
+        "Select technique",
         "Non-Private (Baseline)",
         "Differential Privacy (DP-SGD)",
-        "Federated Learning (Coming Soon)",
+        "Federated Learning",
         "Homomorphic Encryption (Coming Soon)"
     ],
-    index=1
+    index=0
 )
 
 st.sidebar.markdown("---")
 st.sidebar.header("Training Settings")
+st.sidebar.info("""
+    Training Settings Explained:
+    
+    - Epochs: How many times the model sees the dataset
+    - Batch size: Number of samples processed at once
+    - Learning Rate: How fast the model learns
+""")
 seed = st.sidebar.number_input("Random seed", min_value=0, value=42, step=1)
 np.random.seed(seed); torch.manual_seed(seed)
 
@@ -76,19 +113,25 @@ lr = st.sidebar.selectbox("Learning rate", [0.1, 0.05, 0.02, 0.01], index=3)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("DP (only used when DP is selected)")
+st.sidebar.info("""
+    Differential Privacy Controls:
+    - Noise Multiplier: Higher = more privacy, lower accuracy
+    - Max Grad Norm: Limits how much each data point can affect learning
+    - Delta: Probability of privacy leakage (smaller = stronger privacy)
+""")
+
 noise_multiplier = st.sidebar.selectbox("Noise multiplier", [0.5, 0.8, 1.0, 1.2, 1.5], index=2)
 max_grad_norm = st.sidebar.selectbox("Max grad norm", [0.5, 1.0, 1.5, 2.0], index=1)
 delta_str = st.sidebar.text_input("Delta", value="1e-5")
 
 st.sidebar.info(f"Device: **{device}**")
 
-
 # -----------------------------
 # 2) Load data helper (CSV or built-in)
 # -----------------------------
 def load_dataset(ds_choice, uploaded_file, seed):
     """
-    Returns: X_train, X_test, y_train, y_test (numpy arrays)
+    Returns: X_train, x_test, y_train, y_test (numpy arrays)
     CSV format assumption: last column = label (binary).
     """
     if ds_choice == "Upload CSV (last column = label)":
@@ -248,6 +291,83 @@ def run_dp(X_train, y_train, train_ds, test_loader, epochs, lr, batch_size, devi
     acc = evaluate_acc(model, test_loader, device)
     return model, losses, acc, train_loader_dp
 
+def run_federated(x_train, y_train, x_test, y_test, epochs, lr, device):
+
+    num_clients = 3
+
+    # Split data into clients
+    X_splits = np.array_split(x_train, num_clients)
+    y_splits = np.array_split(y_train, num_clients)
+
+    
+    client_data = [
+        (
+            torch.tensor(X_splits[i], dtype=torch.float32),
+            torch.tensor(y_splits[i], dtype=torch.long)
+        )
+        for i in range(num_clients)
+    ]
+
+    global_model = TinyMLP(in_features=x_train.shape[1]).to(device)
+    global_state = global_model.state_dict()
+
+    losses = []
+
+    for _ in range(epochs):
+        client_states = []
+        epoch_loss = 0
+
+        for i in range(num_clients):
+            model = TinyMLP(in_features=x_train.shape[1]).to(device)
+            model.load_state_dict(global_state)
+
+            opt = torch.optim.Adam(model.parameters(), lr=lr)
+            crit = nn.CrossEntropyLoss()
+
+
+            Xc, yc = client_data[i]
+
+            loader = DataLoader(TensorDataset(Xc, yc), batch_size=32, shuffle=True)
+
+            model.train()
+
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                opt.zero_grad()
+                loss = crit(model(xb), yb)
+                loss.backward()
+                opt.step()
+                epoch_loss += loss.item() * xb.size(0)
+
+            client_states.append(model.state_dict())
+
+        
+        new_state = {}
+        for key in global_state.keys():
+            new_state[key] = torch.stack(
+                [cs[key] for cs in client_states], dim=0
+            ).mean(dim=0)
+
+        global_state = new_state
+        global_model.load_state_dict(global_state)
+
+        losses.append(epoch_loss / len(x_train))
+
+    acc = evaluate_acc(
+        global_model,
+        DataLoader(
+            TensorDataset(
+                torch.tensor(x_test, dtype=torch.float32),
+                torch.tensor(y_test, dtype=torch.long)
+            ),
+            batch_size=32
+        ),
+        device
+    )
+
+    return global_model, losses, acc
+            
+
 
 def estimate_epsilon(batch_size, train_ds_len, epochs, train_loader_dp, sigma, delta_str):
     try:
@@ -265,16 +385,27 @@ def estimate_epsilon(batch_size, train_ds_len, epochs, train_loader_dp, sigma, d
 # -----------------------------
 # 4) Tabs: Single technique + Comparison
 # -----------------------------
-tab1, tab2 = st.tabs(["Run Selected Technique", "Comparison (Baseline vs DP)"])
+tab1, tab2 = st.tabs(["Run Selected Technique", "Full Comparison"])
 
 # --- Tab 1: Run the selected technique ---
 with tab1:
     st.header("Run Selected Technique")
 
+    if technique == "Select technique":
+        st.warning("Please select a technique from the sidebar to continue.")
+        st.stop()
+
     if technique == "Non-Private (Baseline)":
         with st.spinner("Training Non-Private model..."):
             _, np_losses, np_acc = run_baseline(X_train, y_train, train_loader_base, test_loader, epochs, lr, device)
         st.success(f"Non-Private Test Accuracy: {np_acc:.3f}")
+
+        st.info("""
+        Result Explanation:
+        - This model has no privacy protection
+        - It usually performs better in accuracy 
+        - However, it may risk exposing sensitive patterns in data
+        """)
 
         fig_np, ax_np = plt.subplots()
         ax_np.plot(range(1, epochs + 1), np_losses, marker="o", label="Non-Private Loss")
@@ -290,6 +421,13 @@ with tab1:
             )
         st.success(f"DP Test Accuracy: {dp_acc:.3f}")
 
+        st.info("""
+        Result Explanation:
+        - DP reduces accuracy due to added noise
+        - This protects individual data points from being memorised by the model
+        - Strong privacy usually means lower model performance
+        """)
+
         fig_dp, ax_dp = plt.subplots()
         ax_dp.plot(range(1, epochs + 1), dp_losses, marker="o", color="orange", label="DP Loss")
         ax_dp.set_xlabel("Epoch"); ax_dp.set_ylabel("Loss"); ax_dp.set_title("DP Loss per Epoch")
@@ -299,61 +437,128 @@ with tab1:
         # Epsilon estimate (DP only)
         eps, best_order = estimate_epsilon(batch_size, len(train_ds), epochs, train_loader_dp, noise_multiplier, delta_str)
         if eps is not None:
-            st.info(f"Approx (ε, δ): ε ≈ {eps:.2f} at δ = {delta_str} (best order ≈ {best_order:.2f})")
+            st.info(f"""
+                Privacy Result (Differential Privacy):
+
+                - Privacy strength (epsilon): {eps:.2f}
+                - Risk level (delta): {delta_str}
+                - Best internal setting used: {best_order:.2f}
+
+                In simple terms:
+                A LOWER epsilon means STRONGER privacy, but usually lower accuracy.
+                A HIGHER epsilon means weaker privacy, but better model performance.
+                """)
         else:
             st.warning(f"Could not estimate ε: {best_order}")
 
-    else:
-        st.info("This technique is not yet implemented for this prototype and is **coming soon** and instead be implemented for FYP.")
+    elif technique == "Federated Learning":
+        with st.spinner("Running Federated Learning simulation..."):
+            fl_model, fl_losses, fl_acc = run_federated(X_train, y_train, X_test, y_test, epochs, lr, device)
 
-# --- Tab 2: Comparison (train both) ---
+        st.success(f"Federated Learning Accuracy: {fl_acc:.3f}")
+
+        st.info("""
+        Result Explanation: 
+        - Data is split across multiple simulated clients
+        - Each client trains locally
+        - Models are averaged (FedAvg)
+        - This preserves privacy by avoiding raw data sharing
+        """)
+
+        fig_fl, ax_fl = plt.subplots()
+        ax_fl.plot(range(1, epochs + 1), fl_losses, marker="o", label="FL Loss")
+        ax_fl.set_title("Federated Learning Loss per Epoch")
+        ax_fl.legend()
+        st.pyplot(fig_fl)
+
+    elif technique == "Homomorphic Encryption (Coming Soon)":
+        st.info("This feature has not been implemented yet. It will be added in a future update.")
+        st.stop()
+        
+# --- Tab 2: Comparison ---
 with tab2:
-    st.header("Baseline vs Differential Privacy (Side-by-side)")
+    st.header("Full Comparison")
 
-    colA, colB = st.columns(2)
+    st.markdown("""
+    ## What this comparison shows:
+    This section highlights the trade-offs between:
+    - Model accuracy (performance)
+    - Privacy Protection (data safety)
+    """)
 
-    with st.spinner("Training Baseline and DP for comparison..."):
-        # Train baseline
-        _, np_losses, np_acc = run_baseline(X_train, y_train, train_loader_base, test_loader, epochs, lr, device)
-        # Train DP
+    with st.spinner("Training all models for comparison..."):
+
+        # Baseline
+        _, np_losses, np_acc = run_baseline(
+            X_train, y_train, train_loader_base, test_loader, epochs, lr, device
+        )
+
+        # DP
         _, dp_losses, dp_acc, train_loader_dp = run_dp(
             X_train, y_train, train_ds, test_loader, epochs, lr, batch_size, device,
             sigma=noise_multiplier, max_gn=max_grad_norm
         )
 
-    with colA:
-        st.subheader("Non-Private")
-        st.metric("Accuracy", f"{np_acc:.3f}")
-        fig1, ax1 = plt.subplots()
-        ax1.plot(range(1, epochs + 1), np_losses, marker="o", label="Non-Private Loss")
-        ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss"); ax1.set_title("Non-Private Loss")
-        ax1.legend()
-        st.pyplot(fig1)
+        # FL
+        _, fl_losses, fl_acc = run_federated(
+            X_train, y_train, X_test, y_test, epochs, lr, device
+        )
 
-    with colB:
+    # --- Accuracy display ---
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.subheader("Baseline")
+        st.metric("Accuracy", f"{np_acc:.3f}")
+
+    with col2:
         st.subheader("Differential Privacy")
         st.metric("Accuracy", f"{dp_acc:.3f}")
-        fig2, ax2 = plt.subplots()
-        ax2.plot(range(1, epochs + 1), dp_losses, marker="o", color="orange", label="DP Loss")
-        ax2.set_xlabel("Epoch"); ax2.set_ylabel("Loss"); ax2.set_title("DP Loss")
-        ax2.legend()
-        st.pyplot(fig2)
 
-    # Combined loss plot
+    with col3:
+        st.subheader("Federated Learning")
+        st.metric("Accuracy", f"{fl_acc:.3f}")
+
+    # --- Loss comparison ---
     st.subheader("Loss Comparison")
-    fig3, ax3 = plt.subplots()
-    ax3.plot(range(1, epochs + 1), np_losses, marker="o", label="Non-Private")
-    ax3.plot(range(1, epochs + 1), dp_losses, marker="o", color="orange", label="DP")
-    ax3.set_xlabel("Epoch"); ax3.set_ylabel("Loss"); ax3.set_title("Loss: Non-Private vs DP")
-    ax3.legend()
-    st.pyplot(fig3)
 
-    # DP epsilon
+    fig, ax = plt.subplots()
+    ax.plot(range(1, epochs + 1), np_losses, label="Baseline")
+    ax.plot(range(1, epochs + 1), dp_losses, label="DP")
+    ax.plot(range(1, epochs + 1), fl_losses, label="FL")
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Loss Comparison Across Techniques")
+    ax.legend()
+
+    st.pyplot(fig)
+
+    # --- DP epsilon ---
     eps, best_order = estimate_epsilon(batch_size, len(train_ds), epochs, train_loader_dp, noise_multiplier, delta_str)
     if eps is not None:
-        st.info(f"Approx (ε, δ): ε ≈ {eps:.2f} at δ = {delta_str} (best order ≈ {best_order:.2f})")
-    else:
-        st.warning(f"Could not estimate ε: {best_order}")
+        st.info(f"""
+            Privacy Result:
+
+            - Privacy strength (epsilon): {eps:.2f}
+            - Risk level (delta): {delta_str}
+            - Best internal setting used: {best_order:.2f}
+
+            In simple terms:
+            A LOWER epsilon means STRONGER privacy, but usually lower accuracy.
+            A HIGHER epsilon means weaker privacy, but better model performance.
+            """)
+    
+    # --- Explanation ---
+    st.info("""
+    Comparison Insights:
+
+    - Baseline: Highest accuracy but no privacy protection
+    - Differential Privacy: Strong privacy, reduced accuracy due to noise
+    - Federated Learning: Good balance, data stays local
+
+    This demonstrates the trade-off between performance and privacy.
+    """)
 
 
 
