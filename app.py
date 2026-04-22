@@ -471,8 +471,38 @@ with tab1:
         ax_fl.legend()
         st.pyplot(fig_fl)
 
-    elif technique == "Homomorphic Encryption (Coming Soon)":
-        st.info("This feature has not been implemented yet. It will be added in a future update.")
+    elif technique == "Homomorphic Encryption":
+        st.info("""
+            ### Homomorphic Encryption (HE)
+
+            Homomorphic Encryption allows computations to be performed **directly on encrypted data** 
+            without needing to decrypt it first.
+
+            #### What this means:
+            - Data remains encrypted at all times
+            - Even the server performing computation cannot see the raw data
+            - Provides **very strong privacy guarantees**
+
+            #### How it would affect results:
+            - Accuracy: Similar to baseline (no noise added like DP)
+            - Training Time: Extremely slow due to heavy encryption computations
+            - Resource Usage: Very high (CPU-intensive, large memory overhead)
+
+            #### Why it is NOT implemented in this demo:
+            - Requires specialised cryptographic libraries (e.g. TenSEAL, SEAL)
+            - Training neural networks with HE is **computationally expensive**
+            - Not practical for real-time interactive apps like this Streamlit demo
+            - Complex to integrate with frameworks like PyTorch
+
+            #### Real-world usage:
+            - Secure cloud ML (e.g. hospitals sending encrypted patient data)
+            - Financial data analysis without exposing raw sensitive information
+
+            #### Summary:
+            Homomorphic Encryption offers **the strongest privacy**, 
+            but at the cost of **very high computational overhead**, 
+            making it impractical for this type of interactive demonstration.
+            """)
         st.stop()
         
 # --- Tab 2: Comparison ---
@@ -559,6 +589,3 @@ with tab2:
 
     This demonstrates the trade-off between performance and privacy.
     """)
-
-
-
