@@ -90,7 +90,7 @@ technique = st.sidebar.selectbox(
         "Non-Private (Baseline)",
         "Differential Privacy (DP-SGD)",
         "Federated Learning",
-        "Homomorphic Encryption (Coming Soon)"
+        "Homomorphic Encryption"
     ],
     index=0
 )
